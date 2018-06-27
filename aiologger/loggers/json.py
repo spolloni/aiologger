@@ -47,17 +47,17 @@ class JsonLogger(Logger):
         self.extra = extra
 
     @classmethod
-    async def with_default_handlers(cls, *,
-                                    name: str='aiologger-json',
-                                    level: int=logging.NOTSET,
-                                    serializer: Callable[..., str]=json.dumps,
-                                    flatten: bool=False,
-                                    serializer_kwargs: Dict=None,
-                                    extra: Dict=None,
-                                    exclude_fields: Iterable[str]=None,
-                                    loop: AbstractEventLoop=None,
-                                    tz: timezone = None):
-        return await super(JsonLogger, cls).with_default_handlers(
+    def with_default_handlers(cls, *,
+                              name: str = 'aiologger-json',
+                              level: int = logging.NOTSET,
+                              serializer: Callable[..., str] = json.dumps,
+                              flatten: bool = False,
+                              serializer_kwargs: Dict = None,
+                              extra: Dict = None,
+                              exclude_fields: Iterable[str] = None,
+                              loop: AbstractEventLoop = None,
+                              tz: timezone = None):
+        return super(JsonLogger, cls).with_default_handlers(
             name='aiologger-json',
             level=level,
             loop=loop,

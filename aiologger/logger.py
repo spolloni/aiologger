@@ -1,5 +1,7 @@
 import logging
 import sys
+from collections import Coroutine
+
 from aiologger.filters import StdoutFilter
 from aiologger.handlers import AsyncStreamHandler
 from aiologger.protocols import AiologgerProtocol
@@ -12,36 +14,41 @@ class Logger(logging.Logger):
                  loop=None):
         super(Logger, self).__init__(name, level)
         self.loop = loop
+        self._init_lazy = False
+        self._lazy_init_coroutine: Coroutine = None
 
     @classmethod
-    async def with_default_handlers(cls, *,
-                                    name='aiologger',
-                                    level=logging.NOTSET,
-                                    formatter: logging.Formatter=None,
-                                    loop=None,
-                                    **kwargs):
+    def with_default_handlers(cls, *,
+                              name='aiologger',
+                              level=logging.NOTSET,
+                              formatter: logging.Formatter = None,
+                              loop=None,
+                              **kwargs):
         self = cls(name=name, level=level, **kwargs)
-
         formatter = formatter or getattr(self, 'formatter', logging.Formatter())
 
-        stdout_handler = await AsyncStreamHandler.init_from_pipe(
-            pipe=sys.stdout,
-            level=logging.DEBUG,
-            protocol_factory=AiologgerProtocol,
-            formatter=formatter,
-            filter=StdoutFilter(),
-            loop=loop)
+        async def _add_default_handlers():
+            stdout_handler = await AsyncStreamHandler.init_from_pipe(
+                pipe=sys.stdout,
+                level=logging.DEBUG,
+                protocol_factory=AiologgerProtocol,
+                formatter=formatter,
+                filter=StdoutFilter(),
+                loop=self.loop)
 
-        stderr_handler = await AsyncStreamHandler.init_from_pipe(
-            pipe=sys.stderr,
-            level=logging.WARNING,
-            protocol_factory=AiologgerProtocol,
-            formatter=formatter,
-            loop=loop)
+            stderr_handler = await AsyncStreamHandler.init_from_pipe(
+                pipe=sys.stderr,
+                level=logging.WARNING,
+                protocol_factory=AiologgerProtocol,
+                formatter=formatter,
+                loop=self.loop)
 
-        self.addHandler(stdout_handler)
-        self.addHandler(stderr_handler)
+            self.addHandler(stdout_handler)
+            self.addHandler(stderr_handler)
+            self._init_lazy = False
 
+        self._init_lazy = True
+        self._lazy_init_coroutine = _add_default_handlers()
         return self
 
     async def callHandlers(self, record):
@@ -75,6 +82,8 @@ class Logger(logging.Logger):
         This method is used for unpickled records received from a socket, as
         well as those created locally. Logger-level filtering is applied.
         """
+        if self._init_lazy:
+            await self._lazy_init_coroutine
         if (not self.disabled) and self.filter(record):
             await self.callHandlers(record)
 
