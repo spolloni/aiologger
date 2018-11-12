@@ -6,7 +6,7 @@ setup(
     name='aiologger',
     version=VERSION,
     packages=find_packages(exclude=['*test*']),
-    url='https://github.com/diogommartins/aiologger',
+    url='https://github.com/B2W-BIT/aiologger',
     author='Diogo Magalhães Martins',
     author_email='magalhaesmartins@icloud.com',
     keywords='logging json log output',
