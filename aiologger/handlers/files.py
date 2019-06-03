@@ -9,35 +9,38 @@ import enum
 import os
 import re
 import time
-from logging import Handler, LogRecord
-from typing import Callable, List
+from asyncio import AbstractEventLoop
+from typing import Callable, List, Optional
 
 import aiofiles
 from aiofiles.threadpool import AsyncTextIOWrapper
 
 from aiologger.handlers.streams import AsyncStreamHandler
+from aiologger.records import LogRecord
 from aiologger.utils import classproperty
 
 
 class AsyncFileHandler(AsyncStreamHandler):
     def __init__(
-        self, filename: str, mode: str = "a", encoding: str = None
+        self,
+        filename: str,
+        mode: str = "a",
+        encoding: str = None,
+        *,
+        loop: Optional[AbstractEventLoop] = None,
     ) -> None:
+        super().__init__(loop=loop)
         filename = os.fspath(filename)
         self.absolute_file_path = os.path.abspath(filename)
         self.mode = mode
         self.encoding = encoding
         self.stream: AsyncTextIOWrapper = None
         self._initialization_lock = asyncio.Lock()
-        Handler.__init__(self)
+        self._initialization_lock = asyncio.Lock(loop=self.loop)
 
     @property
     def initialized(self):
         return self.stream is not None
-
-    @property
-    def loop(self):
-        return asyncio.get_event_loop()
 
     async def _init_writer(self):
         """
@@ -50,6 +53,7 @@ class AsyncFileHandler(AsyncStreamHandler):
                     file=self.absolute_file_path,
                     mode=self.mode,
                     encoding=self.encoding,
+                    loop=self.loop,
                 )
 
     async def close(self):
@@ -59,16 +63,16 @@ class AsyncFileHandler(AsyncStreamHandler):
             await self.stream.flush()
         await self.stream.close()
 
-    async def emit(self, record: LogRecord):  # type: ignore
+    async def emit(self, record: LogRecord):
         if not self.initialized:
             await self._init_writer()
 
         try:
-            msg = self.format(record) + self.terminator
+            msg = self.formatter.format(record) + self.terminator
             await self.stream.write(msg)
             await self.stream.flush()
-        except Exception as e:
-            await self.handleError(record)
+        except Exception as exc:
+            await self.handle_error(record, exc)
 
 
 Namer = Callable[[str], str]
@@ -83,13 +87,15 @@ class BaseAsyncRotatingFileHandler(AsyncFileHandler, metaclass=abc.ABCMeta):
         encoding: str = None,
         namer: Namer = None,
         rotator: Rotator = None,
+        *,
+        loop: Optional[AbstractEventLoop] = None,
     ) -> None:
-        super().__init__(filename, mode, encoding)
+        super().__init__(filename, mode, encoding, loop=loop)
         self.mode = mode
         self.encoding = encoding
         self.namer = namer
         self.rotator = rotator
-        self._rollover_lock = asyncio.Lock()
+        self._rollover_lock = asyncio.Lock(loop=self.loop)
 
     def should_rollover(self, record: LogRecord) -> bool:
         raise NotImplementedError
@@ -110,8 +116,8 @@ class BaseAsyncRotatingFileHandler(AsyncFileHandler, metaclass=abc.ABCMeta):
                     if self.should_rollover(record):
                         await self.do_rollover()
             await super().emit(record)
-        except Exception as e:
-            await self.handleError(record)
+        except Exception as exc:
+            await self.handle_error(record, exc)
 
     def rotation_filename(self, default_name: str) -> str:
         """
@@ -145,7 +151,7 @@ class BaseAsyncRotatingFileHandler(AsyncFileHandler, metaclass=abc.ABCMeta):
             if await self.loop.run_in_executor(
                 None, lambda: os.path.exists(source)
             ):
-                await self.loop.run_in_executor(
+                await self.loop.run_in_executor(  # type: ignore
                     None, lambda: os.rename(source, dest)
                 )
         else:
@@ -203,8 +209,12 @@ class AsyncTimedRotatingFileHandler(BaseAsyncRotatingFileHandler):
         encoding: str = None,
         utc: bool = False,
         at_time: datetime.time = None,
+        *,
+        loop: Optional[AbstractEventLoop] = None,
     ) -> None:
-        super().__init__(filename=filename, mode="a", encoding=encoding)
+        super().__init__(
+            filename=filename, mode="a", encoding=encoding, loop=loop
+        )
         self.when = when.upper()
         self.backup_count = backup_count
         self.utc = utc
@@ -330,18 +340,19 @@ class AsyncTimedRotatingFileHandler(BaseAsyncRotatingFileHandler):
                         days_to_wait = self.day_of_week - day
                     else:
                         days_to_wait = 6 - day + self.day_of_week + 1
-                    new_rollover_at = result + (days_to_wait * (60 * 60 * 24))
+                    new_rollover_at = result + (
+                        days_to_wait * ONE_DAY_IN_SECONDS
+                    )
                     if not self.utc:
                         dst_now = t[-1]
                         dst_at_rollover = time.localtime(new_rollover_at)[-1]
                         if dst_now != dst_at_rollover:
                             if not dst_now:
                                 # DST kicks in before next rollover, so we need to deduct an hour
-                                addend = -ONE_HOUR_IN_SECONDS
+                                new_rollover_at -= ONE_HOUR_IN_SECONDS
                             else:
                                 # DST bows out before next rollover, so we need to add an hour
-                                addend = ONE_HOUR_IN_SECONDS
-                            new_rollover_at += addend
+                                new_rollover_at += ONE_HOUR_IN_SECONDS
                     result = new_rollover_at
         return result
 
@@ -383,7 +394,7 @@ class AsyncTimedRotatingFileHandler(BaseAsyncRotatingFileHandler):
             self.loop.run_in_executor(None, lambda: os.unlink(file_path))
             for file_path in file_paths
         )
-        await asyncio.gather(*delete_tasks)
+        await asyncio.gather(*delete_tasks, loop=self.loop)
 
     async def do_rollover(self):
         """
